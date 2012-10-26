@@ -8,6 +8,7 @@ from django.core.urlresolvers import reverse
 from django.shortcuts import redirect
 import djclsview
 from urlobject import URLObject
+import api_keys
 
 
 class FacebookOAuthView(djclsview.View):
@@ -36,12 +37,12 @@ class FacebookOAuthView(djclsview.View):
     def client_id(self):
         """The client ID for this app."""
         
-        return settings.FACEBOOK_CLIENT_ID
+        return api_keys.FACEBOOK_CLIENT_ID
     
     def client_secret(self):
         """The client secret for this app."""
         
-        return settings.FACEBOOK_CLIENT_SECRET
+        return api_keys.FACEBOOK_CLIENT_SECRET
     
     def fetch_url(self, url):
         """Fetch a given URL; return a string representing the response body."""

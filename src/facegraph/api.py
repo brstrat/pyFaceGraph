@@ -2,9 +2,11 @@
 #from eventlet.green import httplib
 
 import socket
-import simplejson
+try:
+    import json
+except:
+    from django.utils import simplejson as json
 from urllib import urlencode, unquote
-from simplejson.decoder import JSONDecodeError
 
 FB_READ_TIMEOUT = 180
 
@@ -106,8 +108,8 @@ class Api:
 
     def __process_response(self, response, params=None):
         try:
-            data = simplejson.loads(response)
-        except JSONDecodeError:
+            data = json.loads(response)
+        except ValueError:
             data = response
         try:
             if 'error_code' in data:
@@ -216,7 +218,7 @@ class Api:
             response = self.urllib2.urlopen(url, timeout=self.timeout)
         except self.urllib2.HTTPError, e:
             response = e.fp
-        return simplejson.load(response)
+        return json.load(response)
     
     def verify_token(self, tries=1):
         url = "https://graph.facebook.com/me?access_token=%s" % self.access_token

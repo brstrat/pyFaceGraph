@@ -2,16 +2,23 @@
 
 import pprint
 import re
-import urllib
 import urllib2 as default_urllib2
 import httplib as default_httplib
 
 from facegraph.url_operations import (add_path, get_host,
         add_query_params, update_query_params, get_path)
-
-import bunch
-import simplejson as json
+from urlparse import parse_qs, parse_qsl
+from google.appengine.api.urlfetch_errors import DeadlineExceededError,\
+    SSLCertificateError
+import urllib
+try:
+    import json
+except ImportError:
+    import simplejson as json
 from functools import partial
+from facegraph import bunch
+from google.appengine.api import urlfetch
+import logging
 
 p = "^\(#(\d+)\)"
 code_re = re.compile(p)
@@ -140,6 +147,29 @@ class Graph(object):
             import httplib
         self.httplib = httplib
     
+    
+        
+    #SIMPLE
+    def __getstate__(self):
+        return {
+                  'access_token': self.access_token,
+                  'url': self.url,
+                  'timeout': self.timeout,
+                  'retries': self.retries,
+                }
+    
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        import urllib2
+        import httplib
+        self.urllib2 = urllib2
+        self.httplib = httplib
+        self.err_handler = None
+        
+    def __getnewargs__(self):
+        return  (self.access_token, )
+    
+    #END SIMPLE
     def __repr__(self):
         return '<Graph(%r) at 0x%x>' % (self.url, id(self))
     
@@ -175,12 +205,28 @@ class Graph(object):
         
         if self.access_token:
             params['access_token'] = self.access_token
+        
+        #SIMPLE
+        wrap = params.pop('_wrap_single', None)
+        
         url = update_query_params(self.url, params)
-        data = json.loads(self.fetch(url,
+        logging.info("url is %s" % url)
+        result = self.fetch(url,
                                      timeout=self.timeout,
                                      retries=self.retries, 
                                      urllib2=self.urllib2,
-                                     httplib=self.httplib))
+                                     httplib=self.httplib)
+        content = result.content
+        if result.status_code != 200:
+                logging.error("Status code was not 200 %s", content)
+        if wrap:
+            logging.info("wrapping result is %s" % content)
+            if 'error' in content:
+                data = json.loads(content)
+            else:
+                data = dict(parse_qsl(content))
+        else:  
+            data = json.loads(result.content)
         return self.node(data, params)
 
     def __iter__(self):
@@ -221,13 +267,13 @@ class Graph(object):
         
         if get_path(self.url).split('/')[-1] in ['photos']:
             params['timeout'] = self.timeout
-            params['httplib'] = self.httplib
             fetch = partial(self.post_mime, 
                             self.url,
                             httplib=self.httplib,
                             retries=self.retries, 
                             **params)
         else:
+            
             params = dict([(k, v.encode('UTF-8')) for (k,v) in params.iteritems() if v is not None])
             fetch = partial(self.fetch, 
                             self.url, 
@@ -235,9 +281,15 @@ class Graph(object):
                             httplib=self.httplib,
                             timeout=self.timeout,
                             retries=self.retries, 
-                            data=urllib.urlencode(params))
-        
-        data = json.loads(fetch())
+                            data=urllib.urlencode(params),
+                            method='POST')
+            
+        result = fetch()
+        if result.status_code == 200:
+            data = json.loads(result.content)
+        else:
+            data = json.loads(result.content)
+            
         return self.node(data, params, "post")
     
     def post_file(self, file, **params):
@@ -286,26 +338,32 @@ class Graph(object):
         body = crlf.join(body)
         
         # Post to server
-        kwargs = {}
-        if timeout:
-            kwargs = {'timeout': timeout}
-        r = httplib.HTTPSConnection(get_host(url), **kwargs)
-        headers = {'Content-Type': 'multipart/form-data; boundary=%s' % boundary,
+        kwargs = {
+                  'headers' :{'Content-Type': 'multipart/form-data; boundary=%s' % boundary,
                    'Content-Length': str(len(body)),
-                   'MIME-Version': '1.0'}
-        
-        r.request('POST', get_path(url).encode(), body, headers)
+                   'MIME-Version': '1.0'},
+                  'method': 'POST',
+                  'payload': body
+                  }
+        #if timeout:
+        #    kwargs = {'timeout': timeout}
+        #r = httplib.HTTPSConnection(get_host(url), **kwargs)
+        if timeout:
+            kwargs['deadline']  = timeout
+        #r.request('POST', get_path(url).encode(), body, headers)
         attempt = 0
         while True:
             try:
-                return r.getresponse().read()
-            except (httplib.BadStatusLine, IOError):
+                return urlfetch.fetch( url,  **kwargs )
+                #return urlfetch.fetch( get_path(url).encode(),  **kwargs )
+                #return r.getresponse().read()
+            except (httplib.BadStatusLine, IOError, DeadlineExceededError):
                 if attempt < retries:
                     attempt += 1
                 else:
                     raise
-            finally:
-                r.close()
+            #finally:
+            #    r.close()
     
     def delete(self):
         """Delete this resource. Sends a POST with `?method=delete`."""
@@ -313,7 +371,7 @@ class Graph(object):
         return self.post(method='delete')
     
     @staticmethod
-    def fetch(url, data=None, urllib2=default_urllib2, httplib=default_httplib, timeout=DEFAULT_TIMEOUT, retries=None):
+    def fetch(url, data=None, urllib2=default_urllib2, httplib=default_httplib, timeout=DEFAULT_TIMEOUT, retries=None, method='GET'):
         
         """
         Fetch the specified URL, with optional form data; return a string.
@@ -321,24 +379,27 @@ class Graph(object):
         This method exists mainly for dependency injection purposes. By default
         it uses urllib2; you may override it and use an alternative library.
         """
-        conn = None
         attempt = 0
         while True:
             try:
-                kwargs = {}
+                kwargs = {
+                          'method': method,
+                          'payload' : data 
+                          }
                 if timeout:
-                    kwargs = {'timeout': timeout}
-                conn = urllib2.urlopen(url, data=data, **kwargs)
-                return conn.read()
-            except urllib2.HTTPError, e:
-                return e.fp.read()        
-            except (httplib.BadStatusLine, IOError):
+                    kwargs = {'deadline': timeout}
+                    #SIMPLE kwargs = {'timeout': timeout}
+                if data and method.lower()=='get':
+                    url = '%s?%s' % (url, data)
+                    kwargs.pop('payload')
+                return urlfetch.fetch(url, **kwargs)
+            except (DeadlineExceededError,SSLCertificateError):
+                logging.info('retry count is %s %s', retries, attempt)
                 if attempt < retries:
+                    logging.info("retrying to send (facebook)")
                     attempt += 1
                 else:
                     raise
-            finally:
-                conn and conn.close()
 
     def __sentry__(self):
         '''Transform the graph object into something that sentry can 
@@ -463,6 +524,16 @@ class Node(bunch.Bunch):
             return bunch.Bunch.__getattr__(self, attr)
         except AttributeError:
             return self._api[attr]
+    
+    #SIMPLE
+    def __getstate__(self):
+        return self.as_dict()
+    
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        
+    def __getnewargs__(self):
+        return  (self._api, self.as_dict())
     
 class GraphException(Exception):
     def __init__(self, code, message, args=None, params=None, graph=None, method=None):

@@ -2,10 +2,13 @@
 
 import urllib2
 
-import bunch
-import simplejson as json
+try:
+    import json
+except ImportError:
+    import simplejson as json
 from graph import GraphException
 from url_operations import add_path, update_query_params
+from facegraph import bunch
 
 class FQL(object):
     
