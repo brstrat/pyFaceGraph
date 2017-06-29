@@ -9,7 +9,7 @@ from facegraph.url_operations import (add_path, get_host,
         add_query_params, update_query_params, get_path)
 from urlparse import parse_qs, parse_qsl
 from google.appengine.api.urlfetch_errors import DeadlineExceededError,\
-    SSLCertificateError
+    SSLCertificateError, InternalTransientError
 import urllib
 try:
     import json
@@ -26,7 +26,7 @@ code_re = re.compile(p)
 __all__ = ['Graph']
 
 class Graph(object):
-    
+
     """
     Proxy for accessing the Facebook Graph API.
     
@@ -129,10 +129,10 @@ class Graph(object):
         True
     
     """
-    
-    API_ROOT = 'https://graph.facebook.com/'
+    API_VERSION = 'v2.6'
+    API_ROOT = 'https://graph.facebook.com/' + API_VERSION + '/'
     DEFAULT_TIMEOUT = 0 # No timeout as default
-    
+
     def __init__(self, access_token=None, err_handler=None, timeout=DEFAULT_TIMEOUT, retries=5, urllib2=None, httplib=None, **state):
         self.access_token = access_token
         self.err_handler = err_handler
@@ -146,9 +146,9 @@ class Graph(object):
         if httplib is None:
             import httplib
         self.httplib = httplib
-    
-    
-        
+
+
+
     #SIMPLE
     def __getstate__(self):
         return {
@@ -157,7 +157,7 @@ class Graph(object):
                   'timeout': self.timeout,
                   'retries': self.retries,
                 }
-    
+
     def __setstate__(self, state):
         self.__dict__.update(state)
         import urllib2
@@ -165,67 +165,67 @@ class Graph(object):
         self.urllib2 = urllib2
         self.httplib = httplib
         self.err_handler = None
-        
+
     def __getnewargs__(self):
         return  (self.access_token, )
-    
+
     #END SIMPLE
     def __repr__(self):
         return '<Graph(%r) at 0x%x>' % (self.url, id(self))
-    
+
     def copy(self, **update):
         """Copy this Graph, optionally overriding some attributes."""
-        
-        return type(self)(access_token=self.access_token, 
+
+        return type(self)(access_token=self.access_token,
                           err_handler=self.err_handler,
                           timeout=self.timeout,
                           retries=self.retries,
                           urllib2=self.urllib2,
                           httplib=self.httplib,
                           **update)
-    
+
     def __getitem__(self, item):
         if isinstance(item, slice):
             params = {'offset': item.start,
                       'limit': item.stop - item.start}
             return self.copy(url=add_query_params(self.url, params))
         return self.copy(url=add_path(self.url, unicode(item)))
-    
+
     def __getattr__(self, attr):
         return self[attr]
-    
+
     def __or__(self, params):
         return self.copy(url=update_query_params(self.url, params))
-    
+
     def __and__(self, params):
         return self.copy(url=add_query_params(self.url, params))
-    
+
     def __call__(self, **params):
         """Read the current URL, and JSON-decode the results."""
-        
+
         if self.access_token:
             params['access_token'] = self.access_token
-        
+
         #SIMPLE
         wrap = params.pop('_wrap_single', None)
-        
+
         url = update_query_params(self.url, params)
         logging.info("url is %s" % url)
         result = self.fetch(url,
                                      timeout=self.timeout,
-                                     retries=self.retries, 
+                                     retries=self.retries,
                                      urllib2=self.urllib2,
                                      httplib=self.httplib)
         content = result.content
         if result.status_code != 200:
-                logging.error("Status code was not 200 %s", content)
+            logging.warn("Status code was not 200 %s", content)
         if wrap:
             logging.info("wrapping result is %s" % content)
             if 'error' in content:
                 data = json.loads(content)
             else:
                 data = dict(parse_qsl(content))
-        else:  
+        else:
             data = json.loads(result.content)
         return self.node(data, params)
 
@@ -234,109 +234,109 @@ class Graph(object):
 
     def __sentry__(self):
         return 'Graph(url: %s, params: %s)' % (self.url, repr(self.__dict__))
-    
+
     def fields(self, *fields):
         """Shortcut for `?fields=x,y,z`."""
-        
+
         return self | ('fields', ','.join(fields))
-    
+
     def ids(self, *ids):
         """Shortcut for `?ids=1,2,3`."""
-        
+
         return self | ('ids', ','.join(map(str, ids)))
-    
+
     def node(self, data, params, method=None):
         return Node._new(self, data, err_handler=self.err_handler, params=params, method=method)
-    
+
     def post(self, **params):
-        
+
         """
         POST to this URL (with parameters); return the JSON-decoded result.
-        
+
         Example:
-        
+
             >>> Graph('ACCESS TOKEN').me.feed.post(message="Test.")
             Node({'id': '...'})
-        
+
         Some methods allow file attachments so uses MIME request to send those through.
         Must pass in a file object as 'file'
         """
-        
+
         if self.access_token:
             params['access_token'] = self.access_token
-        
-        if get_path(self.url).split('/')[-1] in ['photos']:
+
+        if get_path(self.url).split('/')[-1] in ['photos'] and params.get('file', False):
             params['timeout'] = self.timeout
-            fetch = partial(self.post_mime, 
+            fetch = partial(self.post_mime,
                             self.url,
                             httplib=self.httplib,
-                            retries=self.retries, 
+                            retries=self.retries,
                             **params)
         else:
-            
+
             params = dict([(k, v.encode('UTF-8')) for (k,v) in params.iteritems() if v is not None])
-            fetch = partial(self.fetch, 
-                            self.url, 
+            fetch = partial(self.fetch,
+                            self.url,
                             urllib2=self.urllib2,
                             httplib=self.httplib,
                             timeout=self.timeout,
-                            retries=self.retries, 
+                            retries=self.retries,
                             data=urllib.urlencode(params),
                             method='POST')
-            
+
         result = fetch()
         if result.status_code == 200:
             data = json.loads(result.content)
         else:
             data = json.loads(result.content)
-            
+
         return self.node(data, params, "post")
-    
+
     def post_file(self, file, **params):
-        
+
         if self.access_token:
             params['access_token'] = self.access_token
         params['file'] = file
         params['timeout'] = self.timeout
         params['httplib'] = self.httplib
         data = json.loads(self.post_mime(self.url, **params))
-        
+
         return self.node(data, params, "post_file")
-    
+
     @staticmethod
     def post_mime(url, httplib=default_httplib, timeout=DEFAULT_TIMEOUT, retries=5, **kwargs):
-        
+
         body = []
         crlf = '\r\n'
         boundary = "graphBoundary"
-        
+
         # UTF8 params
         utf8_kwargs = dict([(k, v.encode('UTF-8')) for (k,v) in kwargs.iteritems() if k != 'file' and v is not None])
-        
+
         # Add args
         for (k,v) in utf8_kwargs.iteritems():
             body.append("--"+boundary)
-            body.append('Content-Disposition: form-data; name="%s"' % k) 
+            body.append('Content-Disposition: form-data; name="%s"' % k)
             body.append('')
             body.append(str(v))
-        
+
         # Add raw data
         file = kwargs.get('file')
         if file:
             file.open()
             data = file.read()
             file.close()
-            
+
             body.append("--"+boundary)
             body.append('Content-Disposition: form-data; filename="facegraphfile.png"')
             body.append('')
             body.append(data)
-            
+
             body.append("--"+boundary+"--")
             body.append('')
-        
+
         body = crlf.join(body)
-        
+
         # Post to server
         kwargs = {
                   'headers' :{'Content-Type': 'multipart/form-data; boundary=%s' % boundary,
@@ -364,15 +364,15 @@ class Graph(object):
                     raise
             #finally:
             #    r.close()
-    
+
     def delete(self):
         """Delete this resource. Sends a POST with `?method=delete`."""
-        
+
         return self.post(method='delete')
-    
+
     @staticmethod
     def fetch(url, data=None, urllib2=default_urllib2, httplib=default_httplib, timeout=DEFAULT_TIMEOUT, retries=None, method='GET'):
-        
+
         """
         Fetch the specified URL, with optional form data; return a string.
         
@@ -384,16 +384,16 @@ class Graph(object):
             try:
                 kwargs = {
                           'method': method,
-                          'payload' : data 
+                          'payload' : data
                           }
                 if timeout:
                     kwargs = {'deadline': timeout}
-                    #SIMPLE kwargs = {'timeout': timeout}
+                    # SIMPLE kwargs = {'timeout': timeout}
                 if data and method.lower()=='get':
                     url = '%s?%s' % (url, data)
                     kwargs.pop('payload')
                 return urlfetch.fetch(url, **kwargs)
-            except (DeadlineExceededError,SSLCertificateError):
+            except (DeadlineExceededError,SSLCertificateError, InternalTransientError):
                 logging.info('retry count is %s %s', retries, attempt)
                 if attempt < retries:
                     logging.info("retrying to send (facebook)")
@@ -402,12 +402,12 @@ class Graph(object):
                     raise
 
     def __sentry__(self):
-        '''Transform the graph object into something that sentry can 
+        '''Transform the graph object into something that sentry can
         understand'''
         return "Graph(%s, %s)" % (self.url, str(self.__dict__))
 
 class Node(bunch.Bunch):
-    
+
     """
     Represent a JSON dictionary result from the Facebook Graph API.
     
@@ -471,16 +471,16 @@ class Node(bunch.Bunch):
             return False
     
     """
-    
+
     @classmethod
     def _new(cls, api, data, err_handler=None, params=None, method=None):
-        
+
         """
         Create a new `Node` from a `Graph` and a JSON-decoded object.
         
         If the object is not a dictionary, it will be returned as-is.
         """
-        
+
         if isinstance(data, dict):
             if data.get("error"):
                 code = data["error"].get("code")
@@ -500,11 +500,11 @@ class Node(bunch.Bunch):
                     raise e
             return cls(api, bunch.bunchify(data))
         return data
-    
+
     def __init__(self, api, data):
         super(Node, self).__init__(data)
         object.__setattr__(self, '_api', api)
-   
+
     def as_dict(self):
         return bunch.unbunchify(self)
 
@@ -512,29 +512,29 @@ class Node(bunch.Bunch):
         return 'Node(%r,\n%s)' % (
             self._api,
             indent(pprint.pformat(bunch.unbunchify(self)), prefix='     '))
-    
+
     def __getitem__(self, item):
         try:
             return bunch.Bunch.__getitem__(self, item)
         except KeyError:
             return self._api[item]
-    
+
     def __getattr__(self, attr):
         try:
             return bunch.Bunch.__getattr__(self, attr)
         except AttributeError:
             return self._api[attr]
-    
+
     #SIMPLE
     def __getstate__(self):
         return self.as_dict()
-    
+
     def __setstate__(self, state):
         self.__dict__.update(state)
-        
+
     def __getnewargs__(self):
         return  (self._api, self.as_dict())
-    
+
 class GraphException(Exception):
     def __init__(self, code, message, args=None, params=None, graph=None, method=None):
         Exception.__init__(self)
@@ -561,5 +561,5 @@ class GraphException(Exception):
 
 def indent(string, prefix='    '):
     """Indent each line of a string with a prefix (default is 4 spaces)."""
-    
+
     return ''.join(prefix + line for line in string.splitlines(True))

@@ -4,7 +4,6 @@ from django.conf import settings
 
 from facegraph import signature
 from facegraph import Graph, decode_signed_request
-import api_keys
 
 
 class FacebookGraphMiddleware(object):
@@ -89,8 +88,8 @@ class FacebookCanvasMiddleware(object):
     
     def app_secret(self, request):
         """Semi-abstract method to retrieve the FB app secret for a request."""
-        
-        return getattr(api_keys, 'FACEBOOK_APP_SECRET', None)
+        from app.util.common.delivery.social.facebookv2 import get_facebook_app_secret
+        return get_facebook_app_secret
 
 
 class FacebookCanvasGraphMiddleware(FacebookGraphMiddleware):
